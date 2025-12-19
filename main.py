@@ -23,7 +23,7 @@ def format_property_info(
     property_type: str,
     floor: int,
     build_year: int,
-    area: str,
+    area: int,
     available_date: str,
     market_price: Optional[float] = None,
     deposit: Optional[float] = None,
@@ -96,7 +96,7 @@ class ChecklistRequest(BaseModel):
     propertyType: str
     floor: int
     buildYear: int
-    area: str
+    area: int
     availableDate: str
 
 
@@ -148,7 +148,7 @@ async def analyze_property(
     propertyType: str = Form(...),
     floor: int = Form(...),
     buildYear: int = Form(...),
-    area: str = Form(...),
+    area: int = Form(...),
     availableDate: str = Form(...),
     marketPrice: float = Form(...),
     deposit: float = Form(...),
@@ -216,7 +216,7 @@ async def propose_solution(
     propertyType: str = Form(...),
     floor: int = Form(...),
     buildYear: int = Form(...),
-    area: str = Form(...),
+    area: int = Form(...),
     availableDate: str = Form(...),
     marketPrice: float = Form(...),
     deposit: float = Form(...),
