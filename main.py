@@ -24,7 +24,6 @@ def format_property_info(
     floor: int,
     built_year: int,
     area: float,
-    available_date: str,
     market_price: Optional[float] = None,
     deposit: Optional[float] = None,
     monthly_rent: Optional[float] = None,
@@ -38,7 +37,6 @@ def format_property_info(
         f"층수: {floor}",
         f"준공연도: {built_year}",
         f"면적: {area}",
-        f"입주 가능일: {available_date}",
     ]
     if market_price is not None:
         lines.append(f"시세: {market_price}")
@@ -97,7 +95,6 @@ class ChecklistRequest(BaseModel):
     floor: int
     builtYear: int
     area: float
-    availableDate: str
 
 
 @router.post("/checklist")
@@ -110,7 +107,6 @@ async def generate_checklist(data: ChecklistRequest):
         floor=data.floor,
         built_year=data.builtYear,
         area=data.area,
-        available_date=data.availableDate,
     )
 
     system_prompt = (
@@ -149,7 +145,6 @@ async def analyze_property(
     floor: int = Form(...),
     builtYear: int = Form(...),
     area: float = Form(...),
-    availableDate: str = Form(...),
     marketPrice: float = Form(...),
     deposit: float = Form(...),
     monthlyRent: float = Form(...),
@@ -163,7 +158,6 @@ async def analyze_property(
         floor=floor,
         built_year=builtYear,
         area=area,
-        available_date=availableDate,
         market_price=marketPrice,
         deposit=deposit,
         monthly_rent=monthlyRent,
@@ -217,7 +211,6 @@ async def propose_solution(
     floor: int = Form(...),
     builtYear: int = Form(...),
     area: float = Form(...),
-    availableDate: str = Form(...),
     marketPrice: float = Form(...),
     deposit: float = Form(...),
     monthlyRent: float = Form(...),
@@ -234,7 +227,6 @@ async def propose_solution(
         floor=floor,
         built_year=builtYear,
         area=area,
-        available_date=availableDate,
         market_price=marketPrice,
         deposit=deposit,
         monthly_rent=monthlyRent,
