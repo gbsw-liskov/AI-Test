@@ -1,10 +1,12 @@
 import json
 import os
+import re
 from typing import Any, Dict, List, Optional
 
 import google.generativeai as genai
 from fastapi import APIRouter, FastAPI, Form, UploadFile
 from pydantic import BaseModel
+import requests
 import uvicorn
 from dotenv import load_dotenv
 load_dotenv()
@@ -45,6 +47,81 @@ def format_property_info(
     if monthly_rent is not None:
         lines.append(f"월세: {monthly_rent}")
     return "\n".join(lines)
+
+
+def format_loan_profile(
+    age: int,
+    is_householder: bool,
+    family_type: str,
+    annual_salary: float,
+    monthly_salary: float,
+    income_type: str,
+    income_category: str,
+    rental_area: str,
+    house_type: str,
+    rental_type: str,
+    deposit: float,
+    management_fee: float,
+    available_loan: bool,
+    credit_rating: int,
+    loan_type: str,
+    overdue_record: bool,
+    has_lease_agreement: bool,
+    confirmed: str,
+) -> str:
+    """Summarize borrower and lease conditions for the loan prompt."""
+    lines = [
+        f"나이: {age}",
+        f"세대주 여부: {is_householder}",
+        f"가족 구성: {family_type}",
+        f"연소득: {annual_salary}",
+        f"월소득: {monthly_salary}",
+        f"소득 유형: {income_type}",
+        f"소득 종류: {income_category}",
+        f"거주 지역: {rental_area}",
+        f"주거 형태: {house_type}",
+        f"임대 유형: {rental_type}",
+        f"보증금: {deposit}",
+        f"관리비: {management_fee}",
+        f"대출 가능 여부(사전 확인): {available_loan}",
+        f"신용등급(1~6): {credit_rating}",
+        f"희망 대출 종류: {loan_type}",
+        f"연체 기록 여부: {overdue_record}",
+        f"임대차계약서 보유: {has_lease_agreement}",
+        f"확정일자 상태: {confirmed}",
+    ]
+    return "\n".join(lines)
+
+
+def extract_snippets(keyword: str, text: str, window: int = 160, limit: int = 3) -> List[str]:
+    """Return brief snippets around keyword to reduce hallucination."""
+    snippets: List[str] = []
+    pattern = re.compile(re.escape(keyword), re.IGNORECASE)
+    for match in pattern.finditer(text):
+        start = max(0, match.start() - window)
+        end = min(len(text), match.end() + window)
+        snippet = " ".join(text[start:end].split())
+        snippets.append(snippet[:400])
+        if len(snippets) >= limit:
+            break
+    if not snippets and text:
+        snippets.append(" ".join(text[:400].split()))
+    return snippets
+
+
+def fetch_domestic_loan_guides(keyword: str, sources: List[str]) -> List[Dict[str, Any]]:
+    """Fetch external loan guides to ground the model; tolerant to failures."""
+    results: List[Dict[str, Any]] = []
+    headers = {"User-Agent": "Mozilla/5.0 (loan-guide-bot)"}
+    for url in sources:
+        try:
+            resp = requests.get(url, timeout=6, headers=headers)
+            resp.raise_for_status()
+            snippets = extract_snippets(keyword, resp.text)
+            results.append({"url": url, "snippets": snippets})
+        except Exception as exc:
+            results.append({"url": url, "error": str(exc)})
+    return results
 
 
 async def read_files(files: Optional[List[UploadFile]]) -> str:
@@ -97,6 +174,29 @@ class ChecklistRequest(BaseModel):
     area: float
 
 
+class LoanGuideRequest(BaseModel):
+    age: int
+    isHouseholder: bool
+    familyType: str
+    annualSalary: float
+    monthlySalary: float
+    incomeType: str
+    incomeCategory: str
+    rentalArea: str
+    houseType: str
+    rentalType: str
+    deposit: float
+    managementFee: float
+    availableLoan: bool
+    creditRating: int
+    loanType: str
+    overdueRecord: bool
+    hasLeaseAgreement: bool
+    confirmed: str
+    guideUrls: Optional[List[str]] = None
+    guideKeyword: Optional[str] = None
+
+
 @router.post("/checklist")
 async def generate_checklist(data: ChecklistRequest):
     property_block = format_property_info(
@@ -134,6 +234,81 @@ async def generate_checklist(data: ChecklistRequest):
 
     fallback_items = [line.strip("- ").strip() for line in output.splitlines() if line.strip()]
     return {"contents": fallback_items}
+
+
+@router.post("/loan")
+async def recommend_loan(data: LoanGuideRequest):
+    profile_block = format_loan_profile(
+        age=data.age,
+        is_householder=data.isHouseholder,
+        family_type=data.familyType,
+        annual_salary=data.annualSalary,
+        monthly_salary=data.monthlySalary,
+        income_type=data.incomeType,
+        income_category=data.incomeCategory,
+        rental_area=data.rentalArea,
+        house_type=data.houseType,
+        rental_type=data.rentalType,
+        deposit=data.deposit,
+        management_fee=data.managementFee,
+        available_loan=data.availableLoan,
+        credit_rating=data.creditRating,
+        loan_type=data.loanType,
+        overdue_record=data.overdueRecord,
+        has_lease_agreement=data.hasLeaseAgreement,
+        confirmed=data.confirmed,
+    )
+
+    guide_keyword = data.guideKeyword or "전세자금 대출 가이드"
+    guide_urls = data.guideUrls or []
+    fetched_guides = fetch_domestic_loan_guides(guide_keyword, guide_urls) if guide_urls else []
+    guide_context = "\n\n".join(
+        f"[{item['url']}] " + " ".join(item.get("snippets", []))
+        for item in fetched_guides
+        if item.get("snippets")
+    ) or "참고 문서 없음"
+
+    system_prompt = (
+        "너는 부동산 임차인을 위한 대출 가이드 전문 컨설턴트다. "
+        "전세/월세, 신용/주택/전세 대출 가능성을 검토해 최적 조합과 비용을 제시한다. "
+        "응답은 JSON만 반환하고 마크다운·불릿·백틱·설명 텍스트를 절대 포함하지 마라. "
+        "스키마: {"
+        "\"loanAmount\": number,"
+        "\"interestRate\": number,"
+        "\"ownCapital\": number,"
+        "\"monthlyInterest\": number,"
+        "\"managementFee\": number,"
+        "\"totalMonthlyCost\": number,"
+        "\"loans\": [{\"title\": \"string\", \"content\": \"string\"}],"
+        "\"procedures\": [{\"title\": \"string\", \"content\": \"string\"}],"
+        "\"channels\": [{\"title\": \"string\", \"content\": \"string\"}],"
+        "\"advance\": [{\"title\": \"string\", \"content\": \"string\"}]"
+        "} "
+        "규칙: totalMonthlyCost = monthlyInterest + managementFee. "
+        "loans/procedures/channels/advance는 각각 2~4개를 제공하고, 실행 단계를 명확히 적는다. "
+        "수치는 원 단위 금액과 % 금리로 숫자만 기입한다."
+    )
+
+    user_prompt = (
+        "다음 입주자/임대 조건에 맞춰 대출 가이드와 실행 계획을 작성해라. "
+        "availableLoan이 false이거나 연체 기록이 있으면 보수적으로 한도를 낮추거나 대안(보증금 축소, 보증보험 활용 등)을 제시하라. "
+        "보증금에서 loanAmount를 뺀 값을 ownCapital로 설정하고, monthlyInterest는 loanAmount*interestRate/12/100으로 근사하라. "
+        "주거 형태/임대 유형에 맞는 상품명과 절차를 제시하라. "
+        "가능하면 참고 문서 내용을 우선 반영하고, 없으면 일반 가이드를 제공해라.\n\n"
+        f"{profile_block}\n\n"
+        f"국내 대출 가이드 참고:\n{guide_context}"
+    )
+
+    try:
+        output = call_gemini(system_prompt, user_prompt, temperature=0.28)
+    except Exception as exc:
+        return {"error": f"Gemini 호출 실패: {exc}"}
+
+    parsed = parse_json(output)
+    response_payload: Dict[str, Any] = parsed if parsed else {"raw_output": output}
+    if fetched_guides:
+        response_payload["sources"] = fetched_guides
+    return response_payload
 
 
 @router.post("/analyze")
