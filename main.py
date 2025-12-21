@@ -22,8 +22,8 @@ def format_property_info(
     address: str,
     property_type: str,
     floor: int,
-    build_year: int,
-    area: int,
+    built_year: int,
+    area: float,
     available_date: str,
     market_price: Optional[float] = None,
     deposit: Optional[float] = None,
@@ -36,7 +36,7 @@ def format_property_info(
         f"주소: {address}",
         f"유형: {property_type}",
         f"층수: {floor}",
-        f"준공연도: {build_year}",
+        f"준공연도: {built_year}",
         f"면적: {area}",
         f"입주 가능일: {available_date}",
     ]
@@ -95,8 +95,8 @@ class ChecklistRequest(BaseModel):
     address: str
     propertyType: str
     floor: int
-    buildYear: int
-    area: int
+    builtYear: int
+    area: float
     availableDate: str
 
 
@@ -108,7 +108,7 @@ async def generate_checklist(data: ChecklistRequest):
         address=data.address,
         property_type=data.propertyType,
         floor=data.floor,
-        build_year=data.buildYear,
+        built_year=data.builtYear,
         area=data.area,
         available_date=data.availableDate,
     )
@@ -147,8 +147,8 @@ async def analyze_property(
     address: str = Form(...),
     propertyType: str = Form(...),
     floor: int = Form(...),
-    buildYear: int = Form(...),
-    area: int = Form(...),
+    builtYear: int = Form(...),
+    area: float = Form(...),
     availableDate: str = Form(...),
     marketPrice: float = Form(...),
     deposit: float = Form(...),
@@ -161,7 +161,7 @@ async def analyze_property(
         address=address,
         property_type=propertyType,
         floor=floor,
-        build_year=buildYear,
+        built_year=builtYear,
         area=area,
         available_date=availableDate,
         market_price=marketPrice,
@@ -215,8 +215,8 @@ async def propose_solution(
     address: str = Form(...),
     propertyType: str = Form(...),
     floor: int = Form(...),
-    buildYear: int = Form(...),
-    area: int = Form(...),
+    builtYear: int = Form(...),
+    area: float = Form(...),
     availableDate: str = Form(...),
     marketPrice: float = Form(...),
     deposit: float = Form(...),
@@ -232,7 +232,7 @@ async def propose_solution(
         address=address,
         property_type=propertyType,
         floor=floor,
-        build_year=buildYear,
+        built_year=builtYear,
         area=area,
         available_date=availableDate,
         market_price=marketPrice,
