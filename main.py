@@ -3,6 +3,14 @@ import os
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
+try:
+    import importlib.metadata as _ilm  # stdlib
+    if not hasattr(_ilm, "packages_distributions"):
+        import importlib_metadata as _ilm_backport  # pip install importlib-metadata
+        _ilm.packages_distributions = _ilm_backport.packages_distributions
+except Exception:
+    pass
+
 import google.generativeai as genai
 from fastapi import APIRouter, FastAPI, Form, UploadFile, File
 from pydantic import BaseModel
