@@ -409,11 +409,11 @@ async def analyze_property(
         "{"
         "\"title\": \"위험 항목 제목\","
         "\"content\": \"근거와 영향, 확인/완화 필요 조치\","
-        "\"severity\": \"low|medium|high\""
+        "\"severity\": \"NORMAL|WARNING|DANGER\""
         "}"
         "]"
         "}"
-        "severity는 영향도와 시급성을 반영하여 high/medium/low 중 하나로만 표기한다. "
+        "severity는 영향도와 시급성을 반영하여 NORMAL/WARNING/DANGER 중 하나로만 표기한다. "
         "문장 앞에 불릿/번호를 붙이지 말고 JSON 외 텍스트를 추가하지 마라."
     )
 
@@ -434,6 +434,16 @@ async def analyze_property(
 
     parsed = parse_json(output)
     if parsed:
+        allowed_severity = {"NORMAL", "WARNING", "DANGER"}
+        details = parsed.get("details") if isinstance(parsed, dict) else None
+        if isinstance(details, list):
+            for detail in details:
+                if not isinstance(detail, dict):
+                    continue
+                severity = detail.get("severity")
+                sev_upper = severity.upper().strip() if isinstance(severity, str) else "NORMAL"
+                detail["severity"] = sev_upper if sev_upper in allowed_severity else "NORMAL"
+
         if rejected:
             parsed["rejectedFiles"] = [{"filename": fn, "reason": rsn} for fn, rsn in rejected]
         return parsed
