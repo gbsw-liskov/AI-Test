@@ -1,9 +1,10 @@
 import json
 import os
-from typing import Any, Dict, List, Optional
+from fastapi import APIRouter, FastAPI, Form, UploadFile, File
+from typing import Any, List, Optional, Tuple
 
 import google.generativeai as genai
-from fastapi import APIRouter, FastAPI, Form, UploadFile
+
 from pydantic import BaseModel
 import uvicorn
 from dotenv import load_dotenv
@@ -49,21 +50,6 @@ def format_property_info(
     return "\n".join(lines)
 
 
-async def read_files(files: Optional[List[UploadFile]]) -> str:
-    """Read uploaded files as text and label them; tolerate encoding issues."""
-    if not files:
-        return "첨부 문서 없음"
-
-    chunks: List[str] = []
-    for file in files:
-        try:
-            content = (await file.read()).decode("utf-8", errors="ignore")
-            chunks.append(f"[{file.filename}] 내용:\n{content}")
-        except Exception:
-            chunks.append(f"[{file.filename}] 파일을 읽을 수 없습니다.")
-    return "\n\n".join(chunks)
-
-
 def call_gemini(system_prompt: str, user_prompt: str, temperature: float = 0.3) -> str:
     if not GEMINI_API_KEY:
         raise RuntimeError("환경변수 GEMINI_API_KEY가 설정되지 않았습니다.")
@@ -80,7 +66,7 @@ def call_gemini(system_prompt: str, user_prompt: str, temperature: float = 0.3) 
 
 def parse_json(text: str) -> Optional[Any]:
     try:
-        return json.loads(text)
+        return json.loads(text.strip())
     except Exception:
         return None
 
@@ -140,6 +126,72 @@ async def generate_checklist(data: ChecklistRequest):
     return {"contents": fallback_items}
 
 
+# 지원 확장자 -> mime
+SUPPORTED_EXTS = {
+    ".pdf": "application/pdf",
+    ".txt": "text/plain",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+}
+
+def _ext_of(name: str) -> str:
+    name = (name or "").lower().strip()
+    for ext in SUPPORTED_EXTS.keys():
+        if name.endswith(ext):
+            return ext
+    return ""
+
+async def build_supported_file_parts(files: Optional[List[UploadFile]]):
+    """
+    returns: (parts, rejected)
+      - parts: Gemini contents에 넣을 파일 파트 리스트
+      - rejected: [(filename, reason), ...]
+    """
+    if not files:
+        return [], []
+
+    parts = []
+    rejected: List[Tuple[str, str]] = []
+
+    for f in files:
+        filename = f.filename or "unnamed"
+        ext = _ext_of(filename)
+
+        if not ext:
+            rejected.append((filename, "지원 확장자 아님 (pdf/txt/png/jpg/jpeg/docx만 허용)"))
+            continue
+
+        data = await f.read()
+        mime = SUPPORTED_EXTS[ext]
+
+        # 인라인 bytes로 첨부 (SDK 버전 차이 대비)
+        try:
+            from google.generativeai import types
+            parts.append(types.Part.from_bytes(data=data, mime_type=mime))
+        except Exception:
+            # 대안: Files API 업로드로 첨부
+            import io
+            uploaded = genai.upload_file(io.BytesIO(data), mime_type=mime)
+            parts.append(uploaded)
+
+    return parts, rejected
+
+def call_gemini_contents(system_prompt: str, contents, temperature: float = 0.3) -> str:
+    if not GEMINI_API_KEY:
+        raise RuntimeError("환경변수 GEMINI_API_KEY가 설정되지 않았습니다.")
+    model = genai.GenerativeModel(
+        model_name="gemini-2.5-flash",
+        system_instruction=system_prompt,
+    )
+    response = model.generate_content(
+        contents,
+        generation_config={"temperature": temperature},
+    )
+    return response.text or ""
+
+
 @router.post("/analyze")
 async def analyze_property(
     propertyId: int = Form(...),
@@ -153,7 +205,7 @@ async def analyze_property(
     marketPrice: float = Form(...),
     deposit: float = Form(...),
     monthlyRent: float = Form(...),
-    files: Optional[List[UploadFile]] = None,
+    files: Optional[List[UploadFile]] = File(None),
 ):
     property_block = format_property_info(
         property_id=propertyId,
@@ -168,7 +220,12 @@ async def analyze_property(
         deposit=deposit,
         monthly_rent=monthlyRent,
     )
-    attachments = await read_files(files)
+
+    file_parts, rejected = await build_supported_file_parts(files)
+
+    # 원하면: 미지원 파일이 섞이면 아예 400으로 막아도 됨
+    # if rejected:
+    #     return {"error": "미지원 파일이 포함되어 있습니다.", "rejected": rejected}
 
     system_prompt = (
         "너는 부동산 리스크 분석 전문가다. "
@@ -190,93 +247,32 @@ async def analyze_property(
         "문장 앞에 불릿/번호를 붙이지 말고 JSON 외 텍스트를 추가하지 마라."
     )
 
-    user_prompt = (
-        "다음 매물 정보를 검토하고 위험도를 산출해라. "
-        "첨부 문서 내용도 근거로 활용하라.\n\n"
-        f"{property_block}\n\n"
-        f"첨부 문서:\n{attachments}"
-    )
+    # ✅ 텍스트 + 파일을 함께 contents로 전달
+    contents = [
+        "다음 매물 정보를 검토하고 위험도를 산출해라. 첨부 파일 내용도 근거로 활용하라.",
+        property_block,
+    ]
+    if file_parts:
+        contents.append("첨부 파일들:")
+        contents.extend(file_parts)
+    else:
+        contents.append("첨부 파일 없음")
 
     try:
-        output = call_gemini(system_prompt, user_prompt, temperature=0.2)
+        output = call_gemini_contents(system_prompt, contents, temperature=0.2)
     except Exception as exc:
         return {"error": f"Gemini 호출 실패: {exc}"}
 
     parsed = parse_json(output)
     if parsed:
+        # 미지원 파일 목록은 참고용으로 같이 내려줄 수도 있음
+        if rejected:
+            parsed["rejectedFiles"] = [{"filename": fn, "reason": rsn} for fn, rsn in rejected]
         return parsed
-    return {"raw_output": output}
+
+    return {"raw_output": output, "rejectedFiles": [{"filename": fn, "reason": rsn} for fn, rsn in rejected]}
 
 
-@router.post("/solution")
-async def propose_solution(
-    propertyId: int = Form(...),
-    name: str = Form(...),
-    address: str = Form(...),
-    propertyType: str = Form(...),
-    floor: int = Form(...),
-    buildYear: int = Form(...),
-    area: int = Form(...),
-    availableDate: str = Form(...),
-    marketPrice: float = Form(...),
-    deposit: float = Form(...),
-    monthlyRent: float = Form(...),
-    totalRisk: float = Form(...),
-    summary: str = Form(...),
-    details: str = Form(...),
-    files: Optional[List[UploadFile]] = None,
-):
-    property_block = format_property_info(
-        property_id=propertyId,
-        name=name,
-        address=address,
-        property_type=propertyType,
-        floor=floor,
-        build_year=buildYear,
-        area=area,
-        available_date=availableDate,
-        market_price=marketPrice,
-        deposit=deposit,
-        monthly_rent=monthlyRent,
-    )
-    attachments = await read_files(files)
-    parsed_details: Any = parse_json(details) or details
-
-    system_prompt = (
-        "너는 부동산 컨설팅 전문가다. "
-        "주어진 위험 요약을 바탕으로 실행 가능한 대처 방안과 확인 체크리스트를 제안한다. "
-        "응답은 JSON만 반환하고 다른 텍스트, 마크다운, 코드블록, 백틱을 절대 포함하지 마라.\n"
-        "{"
-        "\"coping\": ["
-        "{"
-        "\"title\": \"대처 전략 제목\","
-        "\"actions\": [\"구체적 실행 단계\"]"
-        "}"
-        "],"
-        "\"checklist\": [\"후속 확인 항목\"]"
-        "}"
-        "actions는 2~5개의 짧은 단계로 작성하며, 바로 실행할 수 있게 작성한다."
-    )
-
-    user_prompt = (
-        "다음 매물의 위험 요약과 세부 내용을 바탕으로 맞춤형 대처 방안을 제안해라. "
-        "첨부 문서에서 근거가 보이면 반영하라.\n\n"
-        f"{property_block}\n\n"
-        f"총 위험도: {totalRisk}\n"
-        f"요약: {summary}\n"
-        f"세부 위험: {parsed_details}\n\n"
-        f"첨부 문서:\n{attachments}"
-    )
-
-    try:
-        output = call_gemini(system_prompt, user_prompt, temperature=0.3)
-    except Exception as exc:
-        return {"error": f"Gemini 호출 실패: {exc}"}
-
-    parsed = parse_json(output)
-    if parsed:
-        return parsed
-    return {"raw_output": output}
 
 
 app.include_router(router)
